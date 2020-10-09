@@ -17,14 +17,15 @@ package raft
 //   in the same server.
 //
 
-import "sync"
-import "sync/atomic"
-import "../labrpc"
+import (
+	"sync"
+	"sync/atomic"
+
+	"../labrpc"
+)
 
 // import "bytes"
 // import "../labgob"
-
-
 
 //
 // as each Raft peer becomes aware that successive log entries are
@@ -43,6 +44,55 @@ type ApplyMsg struct {
 	CommandIndex int
 }
 
+type RaftState int
+
+const (
+	RaftStateFollower  RaftState = 0
+	RaftStateCandidate RaftState = 1
+	RaftStateLeader    RaftState = 2
+)
+
+func (s RaftState) String() string {
+	switch s {
+	case RaftStateFollower:
+		return "FOLLOWER"
+	case RaftStateCandidate:
+		return "CANDIDATE"
+	case RaftStateLeader:
+		return "LEADER"
+	default:
+		return "<invalid>"
+	}
+}
+
+// default ticks for timeouts
+const (
+	defaultHeartBeatTimeoutTicks uint = 1000
+	defaultElectionTimeoutTicks  uint = 100
+)
+
+// raft event
+type raftEV struct {
+	args  interface{}
+	c     chan struct{}
+	reply interface{}
+	err   error
+}
+
+func newRaftEV(args interface{}) *raftEV {
+	return &raftEV{
+		c:     make(chan struct{}, 1),
+		args:  args,
+		reply: nil,
+	}
+}
+
+func (ev *raftEV) Done(reply interface{}, err error) {
+	ev.reply = reply
+	ev.err = err
+	close(ev.c)
+}
+
 //
 // A Go object implementing a single Raft peer.
 //
@@ -56,17 +106,32 @@ type Raft struct {
 	// Your data here (2A, 2B, 2C).
 	// Look at the paper's Figure 2 for a description of what
 	// state a Raft server must maintain.
+	state  RaftState
+	eventc chan *raftEV
 
+	// volatile state on leaders
+	nextIndex  []uint
+	matchIndex []uint
+
+	// volatile state on all servers
+	commitIndex uint
+
+	// persistent state on all servers
+	term        int
+	votedFor    int
+	lastApplied uint
+
+	// clock in ticks
+	heartbeatTimeoutTicks uint
+	electionTimeoutTicks  uint
 }
 
 // return currentTerm and whether this server
 // believes it is the leader.
 func (rf *Raft) GetState() (int, bool) {
 
-	var term int
-	var isleader bool
 	// Your code here (2A).
-	return term, isleader
+	return rf.term, rf.state == StateLeader
 }
 
 //
@@ -84,7 +149,6 @@ func (rf *Raft) persist() {
 	// data := w.Bytes()
 	// rf.persister.SaveRaftState(data)
 }
-
 
 //
 // restore previously persisted state.
@@ -108,15 +172,16 @@ func (rf *Raft) readPersist(data []byte) {
 	// }
 }
 
-
-
-
 //
 // example RequestVote RPC arguments structure.
 // field names must start with capital letters!
 //
 type RequestVoteArgs struct {
 	// Your data here (2A, 2B).
+	Term         uint
+	CandidateID  uint
+	LastLogIndex uint
+	LastLogTerm  uint
 }
 
 //
@@ -125,6 +190,27 @@ type RequestVoteArgs struct {
 //
 type RequestVoteReply struct {
 	// Your data here (2A).
+	Term        uint
+	VoteGranted bool
+}
+
+// TODO
+type AppendEntriesArgs struct {
+	Term         uint
+	LeaderID     uint
+	CommitIndex  uint
+	PrevLogIndex uint
+	PrevLogTerm  uint
+
+	// TODO: logEntries
+}
+
+// TODO
+type AppendEntriesReply struct {
+	Term         uint
+	PeerId       uint
+	Success      bool
+	LastLogIndex uint
 }
 
 //
@@ -132,6 +218,10 @@ type RequestVoteReply struct {
 //
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	// Your code here (2A, 2B).
+}
+
+// AppendEntries handler
+func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
 }
 
 //
@@ -168,6 +258,11 @@ func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *Reques
 	return ok
 }
 
+// send appendEntries RPC to remote server
+func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *AppendEntriesReply) bool {
+	ok := rf.peers[server].Call("Raft.AppendEntries", args, reply)
+	return ok
+}
 
 //
 // the service using Raft (e.g. a k/v server) wants to start
@@ -189,7 +284,6 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	isLeader := true
 
 	// Your code here (2B).
-
 
 	return index, term, isLeader
 }
@@ -234,10 +328,32 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.me = me
 
 	// Your initialization code here (2A, 2B, 2C).
+	rf.state = RaftStateLeader
+	rf.nextIndex = make([]uint, len(peers))
+	rf.matchIndex = make([]uint, len(peers))
+
+	rf.heartbeatTimeoutTicks = defaultHeartBeatTimeoutTicks
+	rf.electionTimeoutTicks = defaultElectionTimeoutTicks
 
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
 
-
+	go rf.loopEV()
 	return rf
+}
+
+func (rf *Raft) loopEV() {
+	// TODO
+}
+
+func (rf *Raft) stepLeader() {
+	// TODO
+}
+
+func (rf *Raft) stepFollower() {
+	// TODO
+}
+
+func (rf *Raft) stepCandidate() {
+	// TODO
 }
