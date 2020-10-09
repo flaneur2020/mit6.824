@@ -20,6 +20,7 @@ package raft
 import (
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"../labrpc"
 )
@@ -69,6 +70,7 @@ func (s RaftState) String() string {
 const (
 	defaultHeartBeatTimeoutTicks uint = 1000
 	defaultElectionTimeoutTicks  uint = 100
+	defaultTickIntervalMs             = 100
 )
 
 // raft event
@@ -76,7 +78,6 @@ type raftEV struct {
 	args  interface{}
 	c     chan struct{}
 	reply interface{}
-	err   error
 }
 
 func newRaftEV(args interface{}) *raftEV {
@@ -87,9 +88,8 @@ func newRaftEV(args interface{}) *raftEV {
 	}
 }
 
-func (ev *raftEV) Done(reply interface{}, err error) {
+func (ev *raftEV) Done(reply interface{}) {
 	ev.reply = reply
-	ev.err = err
 	close(ev.c)
 }
 
@@ -106,8 +106,10 @@ type Raft struct {
 	// Your data here (2A, 2B, 2C).
 	// Look at the paper's Figure 2 for a description of what
 	// state a Raft server must maintain.
-	state  RaftState
-	eventc chan *raftEV
+	state    RaftState
+	eventc   chan *raftEV
+	quitc    chan struct{}
+	quitOnce sync.Once
 
 	// volatile state on leaders
 	nextIndex  []uint
@@ -131,7 +133,7 @@ type Raft struct {
 func (rf *Raft) GetState() (int, bool) {
 
 	// Your code here (2A).
-	return rf.term, rf.state == StateLeader
+	return rf.term, rf.state == RaftStateLeader
 }
 
 //
@@ -213,11 +215,18 @@ type AppendEntriesReply struct {
 	LastLogIndex uint
 }
 
+type TickEventArgs struct{}
+type TickEventReply struct{}
+
 //
 // example RequestVote RPC handler.
 //
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	// Your code here (2A, 2B).
+	ev := newRaftEV(args)
+	rf.eventc <- ev
+	<-ev.c
+	*reply = *(ev.reply.(*RequestVoteReply))
 }
 
 // AppendEntries handler
@@ -302,6 +311,9 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 func (rf *Raft) Kill() {
 	atomic.StoreInt32(&rf.dead, 1)
 	// Your code here, if desired.
+	rf.quitOnce.Do(func() {
+		close(rf.quitc)
+	})
 }
 
 func (rf *Raft) killed() bool {
@@ -338,22 +350,100 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
 
+	rf.eventc = make(chan *raftEV, 1)
+	rf.quitc = make(chan struct{})
 	go rf.loopEV()
+	go rf.loopTicks()
+
 	return rf
 }
 
 func (rf *Raft) loopEV() {
+	for {
+		select {
+		case ev := <-rf.eventc:
+			switch rf.state {
+			case RaftStateLeader:
+				rf.stepLeader(ev)
+			case RaftStateCandidate:
+				rf.stepCandidate(ev)
+			case RaftStateFollower:
+				rf.stepFollower(ev)
+			}
+
+		case <-rf.quitc:
+			break
+		}
+	}
+}
+
+func (rf *Raft) loopTicks() {
+	for {
+		select {
+		case <-rf.quitc:
+			break
+		}
+
+		time.Sleep(defaultTickIntervalMs * time.Millisecond)
+		rf.eventc <- newRaftEV(&TickEventArgs{})
+	}
+}
+
+func (rf *Raft) stepRaft(ev *raftEV) {
+}
+
+func (rf *Raft) stepLeader(ev *raftEV) {
 	// TODO
 }
 
-func (rf *Raft) stepLeader() {
+func (rf *Raft) stepFollower(ev *raftEV) {
+	switch args := ev.args.(type) {
+	case *TickEventArgs:
+		rf.electionTimeoutTicks--
+		// on election timeout
+		if rf.electionTimeoutTicks <= 0 {
+			rf.become(RaftStateCandidate)
+			// TODO: broadcast requestVote rpcs
+			return
+		}
+		ev.Done(&TickEventReply{})
+
+	case *AppendEntriesArgs:
+		rf.resetElectionTimeoutTicks()
+		reply := rf.processAppendEntries(args)
+		ev.Done(reply)
+
+	case *RequestVoteArgs:
+		reply := rf.processRequestVote(args)
+		ev.Done(reply)
+	}
+}
+
+func (rf *Raft) stepCandidate(ev *raftEV) {
 	// TODO
 }
 
-func (rf *Raft) stepFollower() {
-	// TODO
+func (rf *Raft) become(state RaftState) {
+	rf.state = state
+	if state == RaftStateFollower {
+		rf.resetElectionTimeoutTicks()
+	} else if state == RaftStateCandidate {
+		rf.resetElectionTimeoutTicks()
+	} else if state == RaftStateLeader {
+		rf.heartbeatTimeoutTicks = defaultHeartBeatTimeoutTicks
+		// TODO: initialize nextIndex and matchIndex
+	}
 }
 
-func (rf *Raft) stepCandidate() {
-	// TODO
+func (rf *Raft) resetElectionTimeoutTicks() {
+	// TODO: rand it
+	rf.electionTimeoutTicks = defaultElectionTimeoutTicks
+}
+
+func (rf *Raft) processAppendEntries(args *AppendEntriesArgs) *AppendEntriesReply {
+	return nil
+}
+
+func (rf *Raft) processRequestVote(args *RequestVoteArgs) *RequestVoteReply {
+	return nil
 }
