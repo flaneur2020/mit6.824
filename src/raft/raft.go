@@ -18,6 +18,7 @@ package raft
 //
 
 import (
+	"math/rand"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -117,6 +118,9 @@ type Raft struct {
 
 	// volatile state on all servers
 	commitIndex uint
+
+	// volatile state on candidates
+	voteGranted int
 
 	// persistent state on all servers
 	term        int
@@ -365,8 +369,10 @@ func (rf *Raft) loopEV() {
 			switch rf.state {
 			case RaftStateLeader:
 				rf.stepLeader(ev)
+
 			case RaftStateCandidate:
 				rf.stepCandidate(ev)
+
 			case RaftStateFollower:
 				rf.stepFollower(ev)
 			}
@@ -429,6 +435,7 @@ func (rf *Raft) become(state RaftState) {
 		rf.resetElectionTimeoutTicks()
 	} else if state == RaftStateCandidate {
 		rf.resetElectionTimeoutTicks()
+		rf.voteGranted = 0
 	} else if state == RaftStateLeader {
 		rf.heartbeatTimeoutTicks = defaultHeartBeatTimeoutTicks
 		// TODO: initialize nextIndex and matchIndex
@@ -437,7 +444,9 @@ func (rf *Raft) become(state RaftState) {
 
 func (rf *Raft) resetElectionTimeoutTicks() {
 	// TODO: rand it
-	rf.electionTimeoutTicks = defaultElectionTimeoutTicks
+	rnd := rand.New(rand.NewSource(time.Now().UnixNano()))
+	delta := uint(rnd.Int63n(int64(defaultElectionTimeoutTicks)))
+	rf.electionTimeoutTicks = defaultElectionTimeoutTicks + delta
 }
 
 func (rf *Raft) processAppendEntries(args *AppendEntriesArgs) *AppendEntriesReply {
