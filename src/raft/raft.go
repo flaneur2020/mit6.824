@@ -443,7 +443,6 @@ func (rf *Raft) become(state RaftState) {
 }
 
 func (rf *Raft) resetElectionTimeoutTicks() {
-	// TODO: rand it
 	rnd := rand.New(rand.NewSource(time.Now().UnixNano()))
 	delta := uint(rnd.Int63n(int64(defaultElectionTimeoutTicks)))
 	rf.electionTimeoutTicks = defaultElectionTimeoutTicks + delta
