@@ -351,7 +351,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.matchIndex = make([]uint, len(peers))
 
 	rf.heartbeatTimeoutTicks = defaultHeartBeatTimeoutTicks
-	rf.become(RaftStateFollower)
+	rf.becomeFollower()
 
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
@@ -448,20 +448,33 @@ func (rf *Raft) stepCandidate(ev *raftEV) {
 	}
 }
 
-func (rf *Raft) become(s RaftState) {
-	rf.state = s
-	if s == RaftStateFollower {
-		rf.resetElectionTimeoutTicks()
-	} else if s == RaftStateCandidate {
-		rf.resetElectionTimeoutTicks()
-	} else if s == RaftStateLeader {
-		rf.state = RaftStateLeader
-		rf.heartbeatTimeoutTicks = defaultHeartBeatTimeoutTicks
-		for idx := range rf.matchIndex {
-			rf.matchIndex[idx] = 0
-		}
-		// TODO: initialize nextIndex
+func (rf *Raft) becomeFollower() {
+	rf.state = RaftStateFollower
+	rf.resetElectionTimeoutTicks()
+}
+
+func (rf *Raft) becomeLeader() {
+	rf.state = RaftStateLeader
+	rf.heartbeatTimeoutTicks = defaultHeartBeatTimeoutTicks
+
+	for idx := range rf.matchIndex {
+		rf.matchIndex[idx] = 0
 	}
+}
+
+func (rf *Raft) startElection() {
+	rf.state = RaftStateCandidate
+	rf.resetElectionTimeoutTicks()
+
+	rf.term++
+	rf.votedFor = rf.me
+	rf.persist()
+
+	for k := range rf.voteGranted {
+		rf.voteGranted[k] = false
+	}
+
+	rf.broadcastRequestVote()
 }
 
 // lastLogInfo returns the last log index and term
@@ -482,20 +495,6 @@ func (rf *Raft) processAppendEntries(args *AppendEntriesArgs) *AppendEntriesRepl
 
 func (rf *Raft) processRequestVote(args *RequestVoteArgs) *RequestVoteReply {
 	return nil
-}
-
-func (rf *Raft) startElection() {
-	rf.become(RaftStateCandidate)
-
-	rf.term++
-	rf.votedFor = rf.me
-	rf.persist()
-
-	for k := range rf.voteGranted {
-		rf.voteGranted[k] = false
-	}
-
-	rf.broadcastRequestVote()
 }
 
 func (rf *Raft) broadcastRequestVote() {
