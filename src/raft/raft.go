@@ -69,28 +69,28 @@ func (s RaftState) String() string {
 
 // default ticks for timeouts
 const (
-	defaultHeartBeatTimeoutTicks uint = 1000
+	defaultHeartBeatTimeoutTicks uint = 10
 	defaultElectionTimeoutTicks  uint = 100
 	defaultTickIntervalMs             = 100
 )
 
 // raft event
 type raftEV struct {
-	args  interface{}
-	c     chan struct{}
-	reply interface{}
+	args   interface{}
+	c      chan struct{}
+	result interface{} // maybe nil
 }
 
 func newRaftEV(args interface{}) *raftEV {
 	return &raftEV{
-		c:     make(chan struct{}, 1),
-		args:  args,
-		reply: nil,
+		c:      make(chan struct{}, 1),
+		args:   args,
+		result: nil,
 	}
 }
 
-func (ev *raftEV) Done(reply interface{}) {
-	ev.reply = reply
+func (ev *raftEV) Done(result interface{}) {
+	ev.result = result
 	close(ev.c)
 }
 
@@ -120,7 +120,7 @@ type Raft struct {
 	commitIndex uint
 
 	// volatile state on candidates
-	voteGranted int
+	voteGranted []bool
 
 	// persistent state on all servers
 	term        int
@@ -184,8 +184,8 @@ func (rf *Raft) readPersist(data []byte) {
 //
 type RequestVoteArgs struct {
 	// Your data here (2A, 2B).
-	Term         uint
-	CandidateID  uint
+	Term         int
+	CandidateID  int
 	LastLogIndex uint
 	LastLogTerm  uint
 }
@@ -220,7 +220,6 @@ type AppendEntriesReply struct {
 }
 
 type TickEventArgs struct{}
-type TickEventReply struct{}
 
 //
 // example RequestVote RPC handler.
@@ -230,11 +229,15 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	ev := newRaftEV(args)
 	rf.eventc <- ev
 	<-ev.c
-	*reply = *(ev.reply.(*RequestVoteReply))
+	*reply = *(ev.result.(*RequestVoteReply))
 }
 
 // AppendEntries handler
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
+	ev := newRaftEV(args)
+	rf.eventc <- ev
+	<-ev.c
+	*reply = *(ev.result.(*AppendEntriesReply))
 }
 
 //
@@ -344,12 +347,11 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.me = me
 
 	// Your initialization code here (2A, 2B, 2C).
-	rf.state = RaftStateLeader
 	rf.nextIndex = make([]uint, len(peers))
 	rf.matchIndex = make([]uint, len(peers))
 
 	rf.heartbeatTimeoutTicks = defaultHeartBeatTimeoutTicks
-	rf.electionTimeoutTicks = defaultElectionTimeoutTicks
+	rf.become(RaftStateFollower)
 
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
@@ -408,11 +410,10 @@ func (rf *Raft) stepFollower(ev *raftEV) {
 		rf.electionTimeoutTicks--
 		// on election timeout
 		if rf.electionTimeoutTicks <= 0 {
-			rf.become(RaftStateCandidate)
-			// TODO: broadcast requestVote rpcs
+			rf.startElection()
 			return
 		}
-		ev.Done(&TickEventReply{})
+		ev.Done(nil)
 
 	case *AppendEntriesArgs:
 		rf.resetElectionTimeoutTicks()
@@ -426,20 +427,47 @@ func (rf *Raft) stepFollower(ev *raftEV) {
 }
 
 func (rf *Raft) stepCandidate(ev *raftEV) {
-	// TODO
+	switch args := ev.args.(type) {
+	case *TickEventArgs:
+		rf.electionTimeoutTicks--
+		// on election timeout
+		if rf.electionTimeoutTicks <= 0 {
+			rf.startElection()
+			return
+		}
+		ev.Done(nil)
+
+	case *AppendEntriesArgs:
+		rf.resetElectionTimeoutTicks()
+		reply := rf.processAppendEntries(args)
+		ev.Done(reply)
+
+	case *RequestVoteArgs:
+		reply := rf.processRequestVote(args)
+		ev.Done(reply)
+	}
 }
 
-func (rf *Raft) become(state RaftState) {
-	rf.state = state
-	if state == RaftStateFollower {
+func (rf *Raft) become(s RaftState) {
+	rf.state = s
+	if s == RaftStateFollower {
 		rf.resetElectionTimeoutTicks()
-	} else if state == RaftStateCandidate {
+	} else if s == RaftStateCandidate {
 		rf.resetElectionTimeoutTicks()
-		rf.voteGranted = 0
-	} else if state == RaftStateLeader {
+	} else if s == RaftStateLeader {
+		rf.state = RaftStateLeader
 		rf.heartbeatTimeoutTicks = defaultHeartBeatTimeoutTicks
-		// TODO: initialize nextIndex and matchIndex
+		for idx := range rf.matchIndex {
+			rf.matchIndex[idx] = 0
+		}
+		// TODO: initialize nextIndex
 	}
+}
+
+// lastLogInfo returns the last log index and term
+func (rf *Raft) lastLogInfo() (uint, uint) {
+	// TODO:
+	return 0, 0
 }
 
 func (rf *Raft) resetElectionTimeoutTicks() {
@@ -454,4 +482,45 @@ func (rf *Raft) processAppendEntries(args *AppendEntriesArgs) *AppendEntriesRepl
 
 func (rf *Raft) processRequestVote(args *RequestVoteArgs) *RequestVoteReply {
 	return nil
+}
+
+func (rf *Raft) startElection() {
+	rf.become(RaftStateCandidate)
+
+	rf.term++
+	rf.votedFor = rf.me
+	rf.persist()
+
+	for k := range rf.voteGranted {
+		rf.voteGranted[k] = false
+	}
+
+	rf.broadcastRequestVote()
+}
+
+func (rf *Raft) broadcastRequestVote() {
+	logIndex, logTerm := rf.lastLogInfo()
+	args := &RequestVoteArgs{
+		Term:         rf.term,
+		CandidateID:  rf.me,
+		LastLogIndex: logIndex,
+		LastLogTerm:  logTerm,
+	}
+
+	for peerID := range rf.peers {
+		if peerID == rf.me {
+			continue
+		}
+
+		go func() {
+			reply := RequestVoteReply{}
+			ok := rf.sendRequestVote(peerID, args, &reply)
+			if ok {
+				rf.eventc <- newRaftEV(&reply)
+			}
+		}()
+	}
+}
+
+func (rf *Raft) processRequestVoteReply(reply *RequestVoteReply) {
 }
