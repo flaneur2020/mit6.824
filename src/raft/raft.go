@@ -18,8 +18,10 @@ package raft
 //
 
 import (
+	"fmt"
 	"math"
 	"math/rand"
+	"sort"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -95,6 +97,12 @@ func (ev *raftEV) Done(result interface{}) {
 	close(ev.c)
 }
 
+// raft log entry
+type raftLogEntry struct {
+	Index int
+	Term  int
+}
+
 //
 // A Go object implementing a single Raft peer.
 //
@@ -114,11 +122,11 @@ type Raft struct {
 	quitOnce sync.Once
 
 	// volatile state on leaders
-	nextIndex  []uint
-	matchIndex []uint
+	nextIndex  []int
+	matchIndex []int
 
 	// volatile state on all servers
-	commitIndex uint
+	commitIndex int
 
 	// volatile state on candidates
 	voteGranted map[int]bool
@@ -187,8 +195,8 @@ type RequestVoteArgs struct {
 	// Your data here (2A, 2B).
 	Term         int
 	CandidateID  int
-	LastLogIndex uint
-	LastLogTerm  uint
+	LastLogIndex int
+	LastLogTerm  int
 }
 
 //
@@ -200,25 +208,24 @@ type RequestVoteReply struct {
 	Term        int
 	VoteGranted bool
 	PeerID      int
+	Message     string
 }
 
-// TODO
 type AppendEntriesArgs struct {
-	Term         uint
-	LeaderID     uint
-	CommitIndex  uint
-	PrevLogIndex uint
-	PrevLogTerm  uint
-
-	// TODO: logEntries
+	Term         int
+	LeaderID     int
+	CommitIndex  int
+	PrevLogIndex int
+	PrevLogTerm  int
+	LogEntries   []raftLogEntry
 }
 
-// TODO
 type AppendEntriesReply struct {
-	Term         uint
-	PeerId       uint
+	Term         int
+	PeerID       int
 	Success      bool
-	LastLogIndex uint
+	LastLogIndex int
+	Message      string
 }
 
 type TickEventArgs struct{}
@@ -355,10 +362,13 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	// Your initialization code here (2A, 2B, 2C).
 	rf.nextIndex = make([]uint, len(peers))
 	rf.matchIndex = make([]uint, len(peers))
+	rf.voteGranted = map[int]bool{}
 
 	rf.heartbeatTimeoutTicks = defaultHeartBeatTimeoutTicks
 	rf.becomeFollower()
 
+	rf.votedFor = -1
+	rf.term = 0
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
 
@@ -404,7 +414,7 @@ func (rf *Raft) loopTicks() {
 }
 
 func (rf *Raft) stepLeader(ev *raftEV) {
-	switch ev.args.(type) {
+	switch v := ev.args.(type) {
 	case *TickEventArgs:
 		rf.heartbeatTimeoutTicks--
 		if rf.heartbeatTimeoutTicks <= 0 {
@@ -414,13 +424,16 @@ func (rf *Raft) stepLeader(ev *raftEV) {
 		ev.Done(nil)
 
 	case *AppendEntriesReply:
-		// TODO: process appendEntriesReply to update matchIndex and commitIndex
+		rf.processAppendEntriesReply(v)
+		ev.Done(nil)
 
 	case *AppendEntriesArgs:
-		// TODO:
+		reply := rf.processAppendEntries(v)
+		ev.Done(reply)
 
 	case *RequestVoteArgs:
-		// TODO:
+		reply := rf.processRequestVote(v)
+		ev.Done(reply)
 
 	default:
 		ev.Done(nil)
@@ -512,9 +525,23 @@ func (rf *Raft) startElection() {
 }
 
 // lastLogInfo returns the last log index and term
-func (rf *Raft) lastLogInfo() (uint, uint) {
+func (rf *Raft) lastLogInfo() (int, int) {
 	// TODO:
 	return 0, 0
+}
+
+// returns the log entries begins with logIndex
+func (rf *Raft) logEntriesSince(logIndex int) []raftLogEntry {
+	// TODO
+	return []raftLogEntry{}
+}
+
+func (rf *Raft) appendLogEntriesSince(logIndex int, entries []raftLogEntry) {
+	// TODO
+}
+
+func (rf *Raft) applyLogs() {
+	// TODO
 }
 
 func (rf *Raft) resetElectionTimeoutTicks() {
@@ -524,11 +551,113 @@ func (rf *Raft) resetElectionTimeoutTicks() {
 }
 
 func (rf *Raft) processAppendEntries(args *AppendEntriesArgs) *AppendEntriesReply {
-	return nil
+	lastIndex, _ := rf.lastLogInfo()
+
+	reply := &AppendEntriesReply{
+		Success:      false,
+		Term:         rf.term,
+		PeerID:       rf.me,
+		LastLogIndex: lastIndex,
+		Message:      "",
+	}
+
+	if args.Term < rf.term {
+		reply.Message = "args.Term < rf.term"
+		return reply
+	} else if args.Term == rf.term {
+		if rf.state == RaftLeader {
+			reply.Message = "I'm leader"
+			return reply
+		} else if rf.state == RaftCandidate {
+			rf.becomeFollower()
+		}
+	} else if args.Term > rf.term {
+		rf.becomeFollower()
+		rf.term = args.Term
+		rf.votedFor = -1
+		rf.persist()
+	}
+
+	if args.PrevLogIndex > lastIndex {
+		reply.Message = fmt.Sprintf("args.prevLogIndex(%v) < lastIndex(%v)", args.PrevLogIndex, lastIndex)
+		return reply
+	}
+
+	rf.appendLogEntriesSince(args.PrevLogIndex+1, args.LogEntries)
+	rf.commitIndex = args.CommitIndex
+	rf.applyLogs()
+	newLastIndex, _ := rf.lastLogInfo()
+
+	reply.Success = true
+	reply.Message = "success"
+	reply.LastLogIndex = newLastIndex
+	return reply
+}
+
+func (rf *Raft) processAppendEntriesReply(reply *AppendEntriesReply) {
+	if reply.Term > rf.term {
+		rf.becomeFollower()
+		return
+	}
+
+	if !reply.Success {
+		if rf.nextIndex[reply.PeerID] > 0 {
+			rf.nextIndex[reply.PeerID]--
+		}
+		return
+	}
+
+	rf.nextIndex[reply.PeerID] = reply.LastLogIndex + 1
+	rf.matchIndex[reply.PeerID] = reply.LastLogIndex
+
+	commitIndex := calculateLeaderCommitIndex(rf.matchIndex)
+	if rf.commitIndex < commitIndex {
+		rf.commitIndex = commitIndex
+	}
+
+	rf.applyLogs()
 }
 
 func (rf *Raft) processRequestVote(args *RequestVoteArgs) *RequestVoteReply {
-	return nil
+	reply := &RequestVoteReply{
+		VoteGranted: false,
+		Term:        rf.term,
+		PeerID:      rf.me,
+		Message:     "",
+	}
+
+	// if the caller's term smaller than mine, simply refuse
+	if args.Term < rf.term {
+		reply.Message = fmt.Sprintf("args.Term: %d < rf.rterm: %d", args.Term, rf.term)
+		return reply
+	}
+
+	// if the term is equal and we've already voted for another candidate
+	if args.Term == rf.term && rf.votedFor >= 0 && rf.votedFor != args.CandidateID {
+		reply.Message = fmt.Sprintf("i've already voted for %d in term %d", rf.votedFor, rf.term)
+		return reply
+	}
+
+	// if the caller's term bigger than my term: set currentTerm = T, convert to follower
+	if args.Term > rf.term {
+		rf.becomeFollower()
+		rf.term = args.Term
+		rf.votedFor = args.CandidateID
+		rf.persist()
+	}
+
+	// if the candidate's log is not at least as update as our last log
+	lastIndex, lastLogTerm := rf.lastLogInfo()
+	if lastIndex > args.LastLogIndex || lastLogTerm > args.LastLogTerm {
+		reply.Message = "candidate's log not as updated as our last log"
+		return reply
+	}
+
+	rf.votedFor = args.CandidateID
+	rf.persist()
+	reply.VoteGranted = true
+	reply.Message = "cheers"
+	return reply
 }
 
 func (rf *Raft) broadcastRequestVote() {
@@ -546,15 +675,59 @@ func (rf *Raft) broadcastRequestVote() {
 		}
 
 		// async calling requestVote
-		go func() {
+		go func(peerID int) {
 			reply := RequestVoteReply{}
 			ok := rf.sendRequestVote(peerID, args, &reply)
 			if ok {
 				rf.eventc <- newRaftEV(&reply)
 			}
-		}()
+		}(peerID)
 	}
 }
 
 func (rf *Raft) broadcastAppendEntries() {
+	for peerID, nextIndex := range rf.nextIndex {
+		args := rf.prepareAppendEntriesArgs(nextIndex)
+
+		go func(peerID int) {
+			reply := AppendEntriesReply{}
+			ok := rf.sendAppendEntries(peerID, args, &reply)
+			if ok {
+				rf.eventc <- newRaftEV(&reply)
+			}
+		}(peerID)
+	}
+}
+
+func (rf *Raft) prepareAppendEntriesArgs(nextIndex int) *AppendEntriesArgs {
+	args := &AppendEntriesArgs{
+		LeaderID:    rf.me,
+		Term:        rf.term,
+		CommitIndex: rf.commitIndex,
+		LogEntries:  []raftLogEntry{},
+	}
+	if nextIndex == 0 {
+		args.PrevLogIndex = 0
+		args.PrevLogTerm = 0
+		args.LogEntries = rf.logEntriesSince(nextIndex)
+	} else {
+		logEntries := rf.logEntriesSince(nextIndex - 1)
+		if len(logEntries) >= 1 {
+			args.PrevLogIndex = logEntries[0].Index
+			args.PrevLogIndex = logEntries[0].Term
+		}
+		if len(logEntries) >= 2 {
+			args.LogEntries = logEntries[1:]
+		}
+	}
+	return args
+}
+
+func calculateLeaderCommitIndex(matchIndex []int) int {
+	indices := []int{}
+	for _, idx := range matchIndex {
+		indices = append(indices, idx)
+	}
+	sort.Slice(indices, func(i, j int) bool { return indices[i] >= indices[j] })
+	return indices[len(indices)/2]
 }
