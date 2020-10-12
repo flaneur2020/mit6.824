@@ -512,6 +512,11 @@ func (rf *Raft) becomeLeader() {
 	}
 }
 
+// On conversion to candidate, start election:
+// - Increment currentTerm
+// - Vote for self
+// - Reset election timer
+// - Send RequestVote RPCs to all other servers
 func (rf *Raft) startElection() {
 	rf.state = RaftCandidate
 	rf.resetElectionTimeoutTicks()
@@ -572,6 +577,7 @@ func (rf *Raft) processAppendEntries(args *AppendEntriesArgs) *AppendEntriesRepl
 			rf.becomeFollower()
 		}
 	} else if args.Term > rf.term {
+		// If RPC request or response contains term T > currentTerm: set currentTerm = T, convert to follower (§5.1)
 		rf.becomeFollower()
 		rf.term = args.Term
 		rf.votedFor = -1
@@ -687,6 +693,10 @@ func (rf *Raft) broadcastRequestVote() {
 
 func (rf *Raft) broadcastAppendEntries() {
 	for peerID, nextIndex := range rf.nextIndex {
+		if peerID == rf.me {
+			continue
+		}
+
 		args := rf.prepareAppendEntriesArgs(nextIndex)
 
 		go func(peerID int) {
@@ -714,7 +724,7 @@ func (rf *Raft) prepareAppendEntriesArgs(nextIndex int) *AppendEntriesArgs {
 		logEntries := rf.logEntriesSince(nextIndex - 1)
 		if len(logEntries) >= 1 {
 			args.PrevLogIndex = logEntries[0].Index
-			args.PrevLogIndex = logEntries[0].Term
+			args.PrevLogTerm = logEntries[0].Term
 		}
 		if len(logEntries) >= 2 {
 			args.LogEntries = logEntries[1:]
