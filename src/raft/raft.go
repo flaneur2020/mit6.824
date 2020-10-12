@@ -19,6 +19,7 @@ package raft
 
 import (
 	"fmt"
+	"log"
 	"math"
 	"math/rand"
 	"sort"
@@ -73,7 +74,7 @@ func (s RaftState) String() string {
 // default ticks for timeouts
 const (
 	defaultHeartBeatTimeoutTicks uint = 1
-	defaultElectionTimeoutTicks  uint = 20
+	defaultElectionTimeoutTicks  uint = 10
 	defaultTickIntervalMs             = 100
 )
 
@@ -377,6 +378,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	go rf.loopEV()
 	go rf.loopTicks()
 
+	log.Printf("raft.start me=%v", me)
 	return rf
 }
 
@@ -403,13 +405,12 @@ func (rf *Raft) loopEV() {
 
 func (rf *Raft) loopTicks() {
 	for {
+		time.Sleep(defaultTickIntervalMs * time.Millisecond)
 		select {
 		case <-rf.quitc:
 			break
+		case rf.eventc <- newRaftEV(&TickEventArgs{}):
 		}
-
-		time.Sleep(defaultTickIntervalMs * time.Millisecond)
-		rf.eventc <- newRaftEV(&TickEventArgs{})
 	}
 }
 
@@ -418,6 +419,7 @@ func (rf *Raft) stepLeader(ev *raftEV) {
 	case *TickEventArgs:
 		rf.heartbeatTimeoutTicks--
 		if rf.heartbeatTimeoutTicks <= 0 {
+			log.Printf("[%v] leader.start-heartbeat", rf.me)
 			rf.heartbeatTimeoutTicks = defaultHeartBeatTimeoutTicks
 			rf.broadcastAppendEntries()
 		}
@@ -443,9 +445,11 @@ func (rf *Raft) stepLeader(ev *raftEV) {
 func (rf *Raft) stepFollower(ev *raftEV) {
 	switch v := ev.args.(type) {
 	case *TickEventArgs:
+		// log.Printf("follower.tick me=%v", rf.me)
 		rf.electionTimeoutTicks--
 		// on election timeout
 		if rf.electionTimeoutTicks <= 0 {
+			log.Printf("follower.election-timeout start election me=%v", rf.me)
 			rf.startElection()
 			return
 		}
@@ -477,14 +481,12 @@ func (rf *Raft) stepCandidate(ev *raftEV) {
 		ev.Done(nil)
 
 	case *RequestVoteReply:
-		if v.Term != rf.term {
-			return
-		}
 		if v.VoteGranted {
 			rf.voteGranted[v.PeerID] = true
 		}
 		expectedVotes := int(math.Floor(float64(len(rf.peers))/2) + 1)
 		if len(rf.voteGranted) >= expectedVotes {
+			log.Printf("[%v] candidate.im-leader! votes-from=%v", rf.me, rf.voteGranted)
 			rf.becomeLeader()
 		}
 		ev.Done(nil)
@@ -629,7 +631,7 @@ func (rf *Raft) processRequestVote(args *RequestVoteArgs) *RequestVoteReply {
 		VoteGranted: false,
 		Term:        rf.term,
 		PeerID:      rf.me,
-		Message:     "",
+		Message:     "unexpected failure",
 	}
 
 	// if the caller's term smaller than mine, simply refuse
@@ -646,6 +648,7 @@ func (rf *Raft) processRequestVote(args *RequestVoteArgs) *RequestVoteReply {
 
 	// if the caller's term bigger than my term: set currentTerm = T, convert to follower
 	if args.Term > rf.term {
+		log.Printf("[%v][%v] process-request-vote:term-bigger-than-me vote-for=%v", rf.me, rf.state.String(), args.CandidateID)
 		rf.becomeFollower()
 		rf.term = args.Term
 		rf.votedFor = args.CandidateID
@@ -661,6 +664,7 @@ func (rf *Raft) processRequestVote(args *RequestVoteArgs) *RequestVoteReply {
 
 	rf.votedFor = args.CandidateID
 	rf.persist()
+	reply.Term = rf.term
 	reply.VoteGranted = true
 	reply.Message = "cheers"
 	return reply
@@ -684,6 +688,7 @@ func (rf *Raft) broadcastRequestVote() {
 		go func(peerID int) {
 			reply := RequestVoteReply{}
 			ok := rf.sendRequestVote(peerID, args, &reply)
+			log.Printf("[%d] candidate.sent-request-vote [%v] ok=%v args=%#v reply=%#v", rf.me, peerID, ok, args, reply)
 			if ok {
 				rf.eventc <- newRaftEV(&reply)
 			}
