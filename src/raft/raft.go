@@ -72,8 +72,8 @@ func (s RaftState) String() string {
 
 // default ticks for timeouts
 const (
-	defaultHeartBeatTimeoutTicks uint = 10
-	defaultElectionTimeoutTicks  uint = 100
+	defaultHeartBeatTimeoutTicks uint = 1
+	defaultElectionTimeoutTicks  uint = 20
 	defaultTickIntervalMs             = 100
 )
 
@@ -360,8 +360,8 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.me = me
 
 	// Your initialization code here (2A, 2B, 2C).
-	rf.nextIndex = make([]uint, len(peers))
-	rf.matchIndex = make([]uint, len(peers))
+	rf.nextIndex = make([]int, len(peers))
+	rf.matchIndex = make([]int, len(peers))
 	rf.voteGranted = map[int]bool{}
 
 	rf.heartbeatTimeoutTicks = defaultHeartBeatTimeoutTicks
