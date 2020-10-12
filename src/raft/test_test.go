@@ -77,7 +77,7 @@ func TestReElection2A(t *testing.T) {
 	time.Sleep(2 * RaftElectionTimeout)
 	cfg.checkNoLeader()
 
-	// if a quorum arises, it should elect a leader.
+	// if a quorum arises, it should elect a leader. lyz: FAILED HERE
 	cfg.connect((leader2 + 1) % servers)
 	cfg.checkOneLeader()
 

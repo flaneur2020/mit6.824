@@ -123,8 +123,9 @@ type Raft struct {
 	quitOnce sync.Once
 
 	// volatile state on leaders
-	nextIndex  []int
-	matchIndex []int
+	nextIndex         []int
+	matchIndex        []int
+	heartbeatFailures []int // TODO
 
 	// volatile state on all servers
 	commitIndex int
@@ -363,6 +364,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	// Your initialization code here (2A, 2B, 2C).
 	rf.nextIndex = make([]int, len(peers))
 	rf.matchIndex = make([]int, len(peers))
+	rf.heartbeatFailures = make([]int, len(peers))
 	rf.voteGranted = map[int]bool{}
 
 	rf.heartbeatTimeoutTicks = defaultHeartBeatTimeoutTicks
@@ -419,7 +421,6 @@ func (rf *Raft) stepLeader(ev *raftEV) {
 	case *TickEventArgs:
 		rf.heartbeatTimeoutTicks--
 		if rf.heartbeatTimeoutTicks <= 0 {
-			log.Printf("[%v] leader.start-heartbeat", rf.me)
 			rf.heartbeatTimeoutTicks = defaultHeartBeatTimeoutTicks
 			rf.broadcastAppendEntries()
 		}
@@ -485,8 +486,8 @@ func (rf *Raft) stepCandidate(ev *raftEV) {
 			rf.voteGranted[v.PeerID] = true
 		}
 		expectedVotes := int(math.Floor(float64(len(rf.peers))/2) + 1)
-		if len(rf.voteGranted) >= expectedVotes {
-			log.Printf("[%v] candidate.im-leader! votes-from=%v", rf.me, rf.voteGranted)
+		if len(rf.voteGranted)+1 >= expectedVotes {
+			log.Printf("[%v] candidate.im-leader! votes-from=%v expectedVotes=%v", rf.me, rf.voteGranted, expectedVotes)
 			rf.becomeLeader()
 		}
 		ev.Done(nil)
@@ -707,7 +708,10 @@ func (rf *Raft) broadcastAppendEntries() {
 		go func(peerID int) {
 			reply := AppendEntriesReply{}
 			ok := rf.sendAppendEntries(peerID, args, &reply)
-			if ok {
+			log.Printf("[%d] leader.heartbeat [%v] term=%v success=%v message=%v", rf.me, peerID, rf.term, reply.Success, reply.Message)
+
+			emptyReply := AppendEntriesReply{}
+			if ok && reply != emptyReply {
 				rf.eventc <- newRaftEV(&reply)
 			}
 		}(peerID)
