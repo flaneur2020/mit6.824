@@ -380,7 +380,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	go rf.loopEV()
 	go rf.loopTicks()
 
-	log.Printf("raft.start me=%v", me)
+	log.Printf("%v raft.start", rf.logPrefix())
 	return rf
 }
 
@@ -450,7 +450,7 @@ func (rf *Raft) stepFollower(ev *raftEV) {
 		rf.electionTimeoutTicks--
 		// on election timeout
 		if rf.electionTimeoutTicks <= 0 {
-			log.Printf("follower.election-timeout start election me=%v", rf.me)
+			log.Printf("%v step-follower.election-timeout start election", rf.logPrefix())
 			rf.startElection()
 			return
 		}
@@ -487,7 +487,7 @@ func (rf *Raft) stepCandidate(ev *raftEV) {
 		}
 		expectedVotes := int(math.Floor(float64(len(rf.peers))/2) + 1)
 		if len(rf.voteGranted)+1 >= expectedVotes {
-			log.Printf("[%v] candidate.im-leader! votes-from=%v expectedVotes=%v", rf.me, rf.voteGranted, expectedVotes)
+			log.Printf("%v step-candidate.im-leader! votes-from=%v expectedVotes=%v", rf.logPrefix(), rf.voteGranted, expectedVotes)
 			rf.becomeLeader()
 		}
 		ev.Done(nil)
@@ -502,11 +502,13 @@ func (rf *Raft) stepCandidate(ev *raftEV) {
 }
 
 func (rf *Raft) becomeFollower() {
+	log.Printf("%v become-follower", rf.logPrefix())
 	rf.state = RaftFollower
 	rf.resetElectionTimeoutTicks()
 }
 
 func (rf *Raft) becomeLeader() {
+	log.Printf("%v become-leader", rf.logPrefix())
 	rf.state = RaftLeader
 	rf.heartbeatTimeoutTicks = defaultHeartBeatTimeoutTicks
 
@@ -521,6 +523,7 @@ func (rf *Raft) becomeLeader() {
 // - Reset election timer
 // - Send RequestVote RPCs to all other servers
 func (rf *Raft) startElection() {
+	log.Printf("%v become-candidate.start-election", rf.logPrefix())
 	rf.state = RaftCandidate
 	rf.resetElectionTimeoutTicks()
 
@@ -568,6 +571,10 @@ func (rf *Raft) processAppendEntries(args *AppendEntriesArgs) *AppendEntriesRepl
 		LastLogIndex: lastIndex,
 		Message:      "",
 	}
+
+	defer func() {
+		log.Printf("%v process-append-entries from-leader=%v reply=%v", rf.logPrefix(), args.LeaderID, reply.Message)
+	}()
 
 	if args.Term < rf.term {
 		reply.Message = "args.Term < rf.term"
@@ -635,6 +642,10 @@ func (rf *Raft) processRequestVote(args *RequestVoteArgs) *RequestVoteReply {
 		Message:     "unexpected failure",
 	}
 
+	defer func() {
+		log.Printf("%v process-request-vote reply=%s", rf.logPrefix(), reply.Message)
+	}()
+
 	// if the caller's term smaller than mine, simply refuse
 	if args.Term < rf.term {
 		reply.Message = fmt.Sprintf("args.Term: %d < rf.rterm: %d", args.Term, rf.term)
@@ -649,7 +660,7 @@ func (rf *Raft) processRequestVote(args *RequestVoteArgs) *RequestVoteReply {
 
 	// if the caller's term bigger than my term: set currentTerm = T, convert to follower
 	if args.Term > rf.term {
-		log.Printf("[%v][%v] process-request-vote:term-bigger-than-me vote-for=%v", rf.me, rf.state.String(), args.CandidateID)
+		log.Printf("%v processwrequest-vote:term-bigger-than-me vote-for=%v", rf.logPrefix(), args.CandidateID)
 		rf.becomeFollower()
 		rf.term = args.Term
 		rf.votedFor = args.CandidateID
@@ -689,7 +700,7 @@ func (rf *Raft) broadcastRequestVote() {
 		go func(peerID int) {
 			reply := RequestVoteReply{}
 			ok := rf.sendRequestVote(peerID, args, &reply)
-			log.Printf("[%d] candidate.sent-request-vote [%v] ok=%v args=%#v reply=%#v", rf.me, peerID, ok, args, reply)
+			// log.Printf("%v candidate.sent-request-vote [%v] ok=%v args=%#v reply=%#v", rf.logPrefix(), peerID, ok, args, reply)
 			if ok {
 				rf.eventc <- newRaftEV(&reply)
 			}
@@ -708,7 +719,7 @@ func (rf *Raft) broadcastAppendEntries() {
 		go func(peerID int) {
 			reply := AppendEntriesReply{}
 			ok := rf.sendAppendEntries(peerID, args, &reply)
-			log.Printf("[%d] leader.heartbeat [%v] term=%v success=%v message=%v", rf.me, peerID, rf.term, reply.Success, reply.Message)
+			// log.Printf("%v heartbeat [%v] reply=%#v", rf.logPrefix(), peerID, reply)
 
 			emptyReply := AppendEntriesReply{}
 			if ok && reply != emptyReply {
@@ -740,6 +751,10 @@ func (rf *Raft) prepareAppendEntriesArgs(nextIndex int) *AppendEntriesArgs {
 		}
 	}
 	return args
+}
+
+func (rf *Raft) logPrefix() string {
+	return fmt.Sprintf("[%d %v term:%d election-ticks:%d]", rf.me, rf.state.String(), rf.term, rf.electionTimeoutTicks)
 }
 
 func calculateLeaderCommitIndex(matchIndex []int) int {
