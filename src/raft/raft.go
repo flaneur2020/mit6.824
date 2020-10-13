@@ -123,9 +123,8 @@ type Raft struct {
 	quitOnce sync.Once
 
 	// volatile state on leaders
-	nextIndex         []int
-	matchIndex        []int
-	heartbeatFailures []int // TODO
+	nextIndex  []int
+	matchIndex []int
 
 	// volatile state on all servers
 	commitIndex int
@@ -366,7 +365,6 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	// Your initialization code here (2A, 2B, 2C).
 	rf.nextIndex = make([]int, len(peers))
 	rf.matchIndex = make([]int, len(peers))
-	rf.heartbeatFailures = make([]int, len(peers))
 	rf.voteGranted = map[int]bool{}
 
 	rf.heartbeatTimeoutTicks = defaultHeartBeatTimeoutTicks
