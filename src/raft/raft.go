@@ -240,9 +240,10 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	ev := newRaftEV(args)
 	rf.eventc <- ev
 	<-ev.c
-	if ev.result != nil {
-		*reply = *(ev.result.(*RequestVoteReply))
+	if ev.result == nil {
+		panic("unexpected nil result")
 	}
+	*reply = *(ev.result.(*RequestVoteReply))
 }
 
 // AppendEntries handler
@@ -250,9 +251,10 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	ev := newRaftEV(args)
 	rf.eventc <- ev
 	<-ev.c
-	if ev.result != nil {
-		*reply = *(ev.result.(*AppendEntriesReply))
+	if ev.result == nil {
+		panic("unexpected nil result")
 	}
+	*reply = *(ev.result.(*AppendEntriesReply))
 }
 
 //
@@ -439,6 +441,7 @@ func (rf *Raft) stepLeader(ev *raftEV) {
 		ev.Done(reply)
 
 	default:
+		log.Printf("%v step-leader.unexpected-ev %#v", rf.logPrefix(), v)
 		ev.Done(nil)
 	}
 }
@@ -466,6 +469,7 @@ func (rf *Raft) stepFollower(ev *raftEV) {
 		ev.Done(reply)
 
 	default:
+		log.Printf("%v step-follower.unexpected-ev %#v", rf.logPrefix(), v)
 		ev.Done(nil)
 	}
 }
@@ -492,11 +496,16 @@ func (rf *Raft) stepCandidate(ev *raftEV) {
 		}
 		ev.Done(nil)
 
+	case *RequestVoteArgs:
+		reply := rf.processRequestVote(v)
+		ev.Done(reply)
+
 	case *AppendEntriesArgs:
 		reply := rf.processAppendEntries(v)
 		ev.Done(reply)
 
 	default:
+		log.Printf("%v step-candidate.unexpected-ev %#v", rf.logPrefix(), v)
 		ev.Done(nil)
 	}
 }
