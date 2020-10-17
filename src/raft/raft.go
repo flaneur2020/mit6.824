@@ -651,6 +651,7 @@ func (rf *Raft) processDispatchCommand(args *DispatchCommandArgs) *DispatchComma
 	rf.appendLogEntryByCommand(args.Command, rf.term)
 	lastIndex, lastTerm := rf.lastLogInfo()
 
+	rf.matchIndex[rf.me] = lastIndex
 	rf.applyLogs()
 
 	return &DispatchCommandReply{
