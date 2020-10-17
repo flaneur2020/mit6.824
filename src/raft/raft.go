@@ -100,8 +100,9 @@ func (ev *raftEV) Done(result interface{}) {
 
 // raft log entry
 type raftLogEntry struct {
-	Index int
-	Term  int
+	Index   int
+	Term    int
+	Command interface{}
 }
 
 //
@@ -121,6 +122,8 @@ type Raft struct {
 	eventc   chan *raftEV
 	quitc    chan struct{}
 	quitOnce sync.Once
+
+	logEntries []raftLogEntry
 
 	// volatile state on leaders
 	nextIndex  []int
@@ -231,6 +234,16 @@ type AppendEntriesReply struct {
 
 type TickEventArgs struct{}
 
+type DispatchCommandArgs struct {
+	Command interface{}
+}
+
+type DispatchCommandReply struct {
+	IsLeader bool
+	Index    int
+	Term     int
+}
+
 //
 // example RequestVote RPC handler.
 //
@@ -311,13 +324,19 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *Ap
 // the leader.
 //
 func (rf *Raft) Start(command interface{}) (int, int, bool) {
-	index := -1
-	term := -1
-	isLeader := true
+	ev := newRaftEV(&DispatchCommandArgs{
+		Command: command,
+	})
 
-	// Your code here (2B).
+	rf.eventc <- ev
+	<-ev.c
 
-	return index, term, isLeader
+	if ev.result == nil {
+		return -1, -1, false
+	}
+
+	reply := ev.result.(*DispatchCommandReply)
+	return reply.Index, reply.Term, reply.IsLeader
 }
 
 //
@@ -438,6 +457,10 @@ func (rf *Raft) stepLeader(ev *raftEV) {
 		reply := rf.processRequestVote(v)
 		ev.Done(reply)
 
+	case *DispatchCommandArgs:
+		reply := rf.processDispatchCommand(v)
+		ev.Done(reply)
+
 	default:
 		log.Printf("%v step-leader.unexpected-ev %#v", rf.logPrefix(), v)
 		ev.Done(nil)
@@ -544,18 +567,36 @@ func (rf *Raft) startElection() {
 
 // lastLogInfo returns the last log index and term
 func (rf *Raft) lastLogInfo() (int, int) {
-	// TODO:
-	return 0, 0
+	if len(rf.logEntries) == 0 {
+		return -1, -1
+	}
+	logEntry := rf.logEntries[len(rf.logEntries)-1]
+	return logEntry.Index, logEntry.Term
 }
 
 // returns the log entries begins with logIndex
 func (rf *Raft) logEntriesSince(logIndex int) []raftLogEntry {
-	// TODO
-	return []raftLogEntry{}
+	return rf.logEntries[logIndex:]
 }
 
 func (rf *Raft) appendLogEntriesSince(logIndex int, entries []raftLogEntry) {
-	// TODO
+	rf.logEntries = rf.logEntries[0:logIndex]
+	rf.logEntries = append(rf.logEntries, entries...)
+	for i := logIndex; i < len(rf.logEntries); i++ {
+		if rf.logEntries[i].Index == i {
+			panic("bad logIndex")
+		}
+	}
+}
+
+func (rf *Raft) appendLogEntryByCommand(command interface{}, term int) {
+	lastIndex, _ := rf.lastLogInfo()
+	logEntry := raftLogEntry{
+		Index:   lastIndex + 1,
+		Term:    term,
+		Command: command,
+	}
+	rf.logEntries = append(rf.logEntries, logEntry)
 }
 
 func (rf *Raft) applyLogs() {
@@ -566,6 +607,20 @@ func (rf *Raft) resetElectionTimeoutTicks() {
 	rnd := rand.New(rand.NewSource(time.Now().UnixNano()))
 	delta := uint(rnd.Int63n(int64(defaultElectionTimeoutTicks)))
 	rf.electionTimeoutTicks = defaultElectionTimeoutTicks + delta
+}
+
+func (rf *Raft) processDispatchCommand(args *DispatchCommandArgs) *DispatchCommandReply {
+	if rf.state != RaftLeader {
+		return &DispatchCommandReply{IsLeader: false, Index: -1, Term: -1}
+	}
+
+	rf.appendLogEntryByCommand(args.Command, rf.term)
+	lastIndex, lastTerm := rf.lastLogInfo()
+	return &DispatchCommandReply{
+		IsLeader: true,
+		Index:    lastIndex,
+		Term:     lastTerm,
+	}
 }
 
 func (rf *Raft) processAppendEntries(args *AppendEntriesArgs) *AppendEntriesReply {
