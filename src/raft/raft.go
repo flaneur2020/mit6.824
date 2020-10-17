@@ -576,15 +576,22 @@ func (rf *Raft) lastLogInfo() (int, int) {
 
 // returns the log entries begins with logIndex
 func (rf *Raft) logEntriesSince(logIndex int) []raftLogEntry {
+	if logIndex < 0 {
+		logIndex = 0
+	}
 	return rf.logEntries[logIndex:]
 }
 
 func (rf *Raft) appendLogEntriesSince(logIndex int, entries []raftLogEntry) {
+	if logIndex < 0 {
+		logIndex = 0
+	}
+
 	rf.logEntries = rf.logEntries[0:logIndex]
 	rf.logEntries = append(rf.logEntries, entries...)
 	for i := logIndex; i < len(rf.logEntries); i++ {
-		if rf.logEntries[i].Index == i {
-			panic("bad logIndex")
+		if rf.logEntries[i].Index != i {
+			panic(fmt.Sprintf("bad logIndex, log.Index: %d, i: %d", rf.logEntries[i].Index, i))
 		}
 	}
 }
@@ -614,6 +621,8 @@ func (rf *Raft) processDispatchCommand(args *DispatchCommandArgs) *DispatchComma
 		return &DispatchCommandReply{IsLeader: false, Index: -1, Term: -1}
 	}
 
+	log.Printf("%v process-dispatch-command cmd=%#v", rf.logPrefix(), args.Command)
+
 	rf.appendLogEntryByCommand(args.Command, rf.term)
 	lastIndex, lastTerm := rf.lastLogInfo()
 	return &DispatchCommandReply{
@@ -635,7 +644,7 @@ func (rf *Raft) processAppendEntries(args *AppendEntriesArgs) *AppendEntriesRepl
 	}
 
 	defer func() {
-		log.Printf("%v process-append-entries from-leader=%v reply=%v", rf.logPrefix(), args.LeaderID, reply.Message)
+		log.Printf("%v process-append-entries from-leader=%v entries=%d reply=%v", rf.logPrefix(), args.LeaderID, len(args.LogEntries), reply.Message)
 	}()
 
 	if args.Term < rf.term {
@@ -657,7 +666,7 @@ func (rf *Raft) processAppendEntries(args *AppendEntriesArgs) *AppendEntriesRepl
 	}
 
 	if args.PrevLogIndex > lastIndex {
-		reply.Message = fmt.Sprintf("args.prevLogIndex(%v) < lastIndex(%v)", args.PrevLogIndex, lastIndex)
+		reply.Message = fmt.Sprintf("args.prevLogIndex(%v) > lastIndex(%v)", args.PrevLogIndex, lastIndex)
 		return reply
 	}
 
@@ -799,9 +808,9 @@ func (rf *Raft) prepareAppendEntriesArgs(nextIndex int) *AppendEntriesArgs {
 		LogEntries:  []raftLogEntry{},
 	}
 	if nextIndex == 0 {
-		args.PrevLogIndex = 0
+		args.PrevLogIndex = -1
 		args.PrevLogTerm = 0
-		args.LogEntries = rf.logEntriesSince(nextIndex)
+		args.LogEntries = rf.logEntriesSince(0)
 	} else {
 		logEntries := rf.logEntriesSince(nextIndex - 1)
 		if len(logEntries) >= 1 {
