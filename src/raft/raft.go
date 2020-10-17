@@ -122,6 +122,7 @@ type Raft struct {
 	eventc   chan *raftEV
 	quitc    chan struct{}
 	quitOnce sync.Once
+	applyCh  chan ApplyMsg
 
 	logEntries []raftLogEntry
 
@@ -131,6 +132,7 @@ type Raft struct {
 
 	// volatile state on all servers
 	commitIndex int
+	applyIndex  int
 
 	// volatile state on candidates
 	voteGranted map[int]bool
@@ -385,6 +387,8 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.nextIndex = make([]int, len(peers))
 	rf.matchIndex = make([]int, len(peers))
 	rf.voteGranted = map[int]bool{}
+	rf.commitIndex = -1
+	rf.applyIndex = -1
 
 	rf.heartbeatTimeoutTicks = defaultHeartBeatTimeoutTicks
 	rf.becomeFollower()
@@ -394,6 +398,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
 
+	rf.applyCh = applyCh
 	rf.eventc = make(chan *raftEV, 1)
 	rf.quitc = make(chan struct{})
 	go rf.loopEV()
@@ -542,9 +547,17 @@ func (rf *Raft) becomeLeader() {
 	rf.state = RaftLeader
 	rf.heartbeatTimeoutTicks = defaultHeartBeatTimeoutTicks
 
+	lastIndex, _ := rf.lastLogInfo()
+
 	for idx := range rf.matchIndex {
-		rf.matchIndex[idx] = 0
+		rf.matchIndex[idx] = -1
+		rf.nextIndex[idx] = lastIndex + 1
 	}
+
+	// append one nop log entry after a new leader got elected
+	rf.processDispatchCommand(&DispatchCommandArgs{
+		Command: "nop",
+	})
 }
 
 // On conversion to candidate, start election:
@@ -607,7 +620,19 @@ func (rf *Raft) appendLogEntryByCommand(command interface{}, term int) {
 }
 
 func (rf *Raft) applyLogs() {
-	// TODO
+	for i := rf.applyIndex + 1; i <= rf.commitIndex; i++ {
+		entry := rf.logEntries[i]
+
+		msg := ApplyMsg{
+			CommandValid: true,
+			Command:      entry.Command,
+			CommandIndex: entry.Index,
+		}
+
+		log.Printf("%v apply-logs msg=%#v", rf.logPrefix(), &msg)
+		rf.applyCh <- msg
+		rf.applyIndex = i
+	}
 }
 
 func (rf *Raft) resetElectionTimeoutTicks() {
@@ -625,6 +650,9 @@ func (rf *Raft) processDispatchCommand(args *DispatchCommandArgs) *DispatchComma
 
 	rf.appendLogEntryByCommand(args.Command, rf.term)
 	lastIndex, lastTerm := rf.lastLogInfo()
+
+	rf.applyLogs()
+
 	return &DispatchCommandReply{
 		IsLeader: true,
 		Index:    lastIndex,
@@ -698,6 +726,7 @@ func (rf *Raft) processAppendEntriesReply(reply *AppendEntriesReply) {
 	rf.matchIndex[reply.PeerID] = reply.LastLogIndex
 
 	commitIndex := calculateLeaderCommitIndex(rf.matchIndex)
+	log.Printf("%v process-append-entries-reply matchIndex=%#v new-commit-index=%d", rf.logPrefix(), rf.matchIndex, commitIndex)
 	if rf.commitIndex < commitIndex {
 		rf.commitIndex = commitIndex
 	}
@@ -825,7 +854,7 @@ func (rf *Raft) prepareAppendEntriesArgs(nextIndex int) *AppendEntriesArgs {
 }
 
 func (rf *Raft) logPrefix() string {
-	return fmt.Sprintf("[%d %v term:%d election-ticks:%d]", rf.me, rf.state.String(), rf.term, rf.electionTimeoutTicks)
+	return fmt.Sprintf("[%d %v term:%d apply-idx:%d commit-idx:%d election-ticks:%d]", rf.me, rf.state.String(), rf.term, rf.applyIndex, rf.commitIndex, rf.electionTimeoutTicks)
 }
 
 func calculateLeaderCommitIndex(matchIndex []int) int {
