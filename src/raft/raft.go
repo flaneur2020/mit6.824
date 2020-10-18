@@ -73,9 +73,9 @@ func (s RaftState) String() string {
 
 // default ticks for timeouts
 const (
-	defaultHeartBeatTimeoutTicks uint = 1
-	defaultElectionTimeoutTicks  uint = 10
-	defaultTickIntervalMs             = 100
+	defaultHeartBeatTimeoutTicks uint = 5
+	defaultElectionTimeoutTicks  uint = 100
+	defaultTickIntervalMs             = 10
 )
 
 // raft event
@@ -392,6 +392,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 
 	rf.heartbeatTimeoutTicks = defaultHeartBeatTimeoutTicks
 	rf.becomeFollower()
+	rf.resetElectionTimeoutTicks()
 
 	rf.votedFor = -1
 	rf.term = 0
@@ -494,7 +495,7 @@ func (rf *Raft) stepFollower(ev *raftEV) {
 		ev.Done(reply)
 
 	default:
-		log.Printf("%v step-follower.unexpected-ev %#v", rf.logPrefix(), v)
+		// log.Printf("%v step-follower.unexpected-ev %#v", rf.logPrefix(), v)
 		ev.Done(nil)
 	}
 }
@@ -700,6 +701,8 @@ func (rf *Raft) processAppendEntries(args *AppendEntriesArgs) *AppendEntriesRepl
 		rf.persist()
 	}
 
+	rf.resetElectionTimeoutTicks()
+
 	// Reply false if log doesn’tcontain an entry at prevLogndex whose term matches prevLogTerm (§5.3)
 	if args.PrevLogIndex > lastIndex {
 		reply.Message = fmt.Sprintf("args.prevLogIndex(%v) > lastIndex(%v)", args.PrevLogIndex, lastIndex)
@@ -710,7 +713,7 @@ func (rf *Raft) processAppendEntries(args *AppendEntriesArgs) *AppendEntriesRepl
 	if args.PrevLogIndex >= 0 {
 		prevLogEntry := rf.logEntryAt(args.PrevLogIndex)
 		if args.PrevLogTerm != prevLogEntry.Term {
-			reply.Message = fmt.Sprintf("prevLogTerm not match: got: %v, my: %v", args.PrevLogTerm, prevLogEntry.Term)
+			reply.Message = fmt.Sprintf("prevLogTerm on index %d not match: got: %v, my: %v", args.PrevLogIndex, args.PrevLogTerm, prevLogEntry.Term)
 			return reply
 		}
 	}
@@ -718,7 +721,6 @@ func (rf *Raft) processAppendEntries(args *AppendEntriesArgs) *AppendEntriesRepl
 	rf.appendLogEntriesSince(args.PrevLogIndex+1, args.LogEntries)
 	rf.commitIndex = args.CommitIndex
 	rf.applyLogs()
-	rf.resetElectionTimeoutTicks()
 
 	newLastIndex, _ := rf.lastLogInfo()
 	reply.Success = true
@@ -729,7 +731,6 @@ func (rf *Raft) processAppendEntries(args *AppendEntriesArgs) *AppendEntriesRepl
 
 func (rf *Raft) processAppendEntriesReply(reply *AppendEntriesReply) {
 	if reply.Term > rf.term {
-		// rf.becomeFollower()
 		return
 	}
 
@@ -763,7 +764,7 @@ func (rf *Raft) processRequestVote(args *RequestVoteArgs) *RequestVoteReply {
 	}
 
 	defer func() {
-		log.Printf("%v process-request-vote reply=%s", rf.logPrefix(), reply.Message)
+		log.Printf("%v process-request-vote from-peer=%d reply=%s", rf.logPrefix(), args.CandidateID, reply.Message)
 	}()
 
 	// if the caller's term smaller than mine, simply refuse
@@ -780,7 +781,7 @@ func (rf *Raft) processRequestVote(args *RequestVoteArgs) *RequestVoteReply {
 
 	// if the caller's term bigger than my term: set currentTerm = T, convert to follower
 	if args.Term > rf.term {
-		log.Printf("%v processwrequest-vote:term-bigger-than-me vote-for=%v", rf.logPrefix(), args.CandidateID)
+		log.Printf("%v process-request-vote:term-bigger-than-me from-peer=%v update-term=%v", rf.logPrefix(), args.CandidateID, args.Term)
 		rf.becomeFollower()
 		rf.term = args.Term
 		rf.votedFor = args.CandidateID
@@ -889,4 +890,11 @@ func calculateLeaderCommitIndex(matchIndex []int) int {
 	}
 	sort.Slice(indices, func(i, j int) bool { return indices[i] >= indices[j] })
 	return indices[len(indices)/2]
+}
+
+func minInt(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }
