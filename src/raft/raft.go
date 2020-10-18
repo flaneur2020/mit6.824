@@ -594,6 +594,14 @@ func (rf *Raft) logEntriesSince(logIndex int) []raftLogEntry {
 	return rf.logEntries[logIndex:]
 }
 
+// returns the log entries begins with logIndex
+func (rf *Raft) logEntryAt(logIndex int) raftLogEntry {
+	if logIndex < 0 {
+		panic("logIndex < 0")
+	}
+	return rf.logEntries[logIndex]
+}
+
 func (rf *Raft) appendLogEntriesSince(logIndex int, entries []raftLogEntry) {
 	if logIndex < 0 {
 		logIndex = 0
@@ -692,9 +700,19 @@ func (rf *Raft) processAppendEntries(args *AppendEntriesArgs) *AppendEntriesRepl
 		rf.persist()
 	}
 
+	// Reply false if log doesn’tcontain an entry at prevLogndex whose term matches prevLogTerm (§5.3)
 	if args.PrevLogIndex > lastIndex {
 		reply.Message = fmt.Sprintf("args.prevLogIndex(%v) > lastIndex(%v)", args.PrevLogIndex, lastIndex)
 		return reply
+	}
+
+	// If the follower does not find an entry in its log with the same index and term, then it refuses the new entries.
+	if args.PrevLogIndex >= 0 {
+		prevLogEntry := rf.logEntryAt(args.PrevLogIndex)
+		if args.PrevLogTerm != prevLogEntry.Term {
+			reply.Message = fmt.Sprintf("prevLogTerm not match: got: %v, my: %v", args.PrevLogTerm, prevLogEntry.Term)
+			return reply
+		}
 	}
 
 	rf.appendLogEntriesSince(args.PrevLogIndex+1, args.LogEntries)
