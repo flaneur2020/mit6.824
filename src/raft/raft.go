@@ -486,7 +486,6 @@ func (rf *Raft) stepFollower(ev *raftEV) {
 		ev.Done(nil)
 
 	case *AppendEntriesArgs:
-		rf.resetElectionTimeoutTicks()
 		reply := rf.processAppendEntries(v)
 		ev.Done(reply)
 
@@ -651,7 +650,6 @@ func (rf *Raft) processDispatchCommand(args *DispatchCommandArgs) *DispatchComma
 	rf.appendLogEntryByCommand(args.Command, rf.term)
 	lastIndex, lastTerm := rf.lastLogInfo()
 
-	rf.matchIndex[rf.me] = lastIndex
 	rf.applyLogs()
 
 	return &DispatchCommandReply{
@@ -702,8 +700,9 @@ func (rf *Raft) processAppendEntries(args *AppendEntriesArgs) *AppendEntriesRepl
 	rf.appendLogEntriesSince(args.PrevLogIndex+1, args.LogEntries)
 	rf.commitIndex = args.CommitIndex
 	rf.applyLogs()
-	newLastIndex, _ := rf.lastLogInfo()
+	rf.resetElectionTimeoutTicks()
 
+	newLastIndex, _ := rf.lastLogInfo()
 	reply.Success = true
 	reply.Message = "success"
 	reply.LastLogIndex = newLastIndex
@@ -712,7 +711,7 @@ func (rf *Raft) processAppendEntries(args *AppendEntriesArgs) *AppendEntriesRepl
 
 func (rf *Raft) processAppendEntriesReply(reply *AppendEntriesReply) {
 	if reply.Term > rf.term {
-		rf.becomeFollower()
+		// rf.becomeFollower()
 		return
 	}
 
@@ -726,7 +725,9 @@ func (rf *Raft) processAppendEntriesReply(reply *AppendEntriesReply) {
 	rf.nextIndex[reply.PeerID] = reply.LastLogIndex + 1
 	rf.matchIndex[reply.PeerID] = reply.LastLogIndex
 
+	rf.matchIndex[rf.me], _ = rf.lastLogInfo()
 	commitIndex := calculateLeaderCommitIndex(rf.matchIndex)
+
 	log.Printf("%v process-append-entries-reply matchIndex=%#v new-commit-index=%d", rf.logPrefix(), rf.matchIndex, commitIndex)
 	if rf.commitIndex < commitIndex {
 		rf.commitIndex = commitIndex
@@ -768,10 +769,14 @@ func (rf *Raft) processRequestVote(args *RequestVoteArgs) *RequestVoteReply {
 		rf.persist()
 	}
 
-	// if the candidate's log is not at least as update as our last log
+	// - If the logs have last entries with different terms, then the log with the later term is more up-to-date.
+	// - If the logs end with the same term, then whichever log is longer is more up-to-date
 	lastIndex, lastLogTerm := rf.lastLogInfo()
-	if lastIndex > args.LastLogIndex || lastLogTerm > args.LastLogTerm {
-		reply.Message = "candidate's log not as updated as our last log"
+	if lastLogTerm > args.LastLogTerm {
+		reply.Message = "candidate's log term not as updated as our last log"
+		return reply
+	} else if lastLogTerm == args.LastLogTerm && lastIndex > args.LastLogIndex {
+		reply.Message = "candidate's log index not as updated as our last log"
 		return reply
 	}
 
@@ -855,7 +860,8 @@ func (rf *Raft) prepareAppendEntriesArgs(nextIndex int) *AppendEntriesArgs {
 }
 
 func (rf *Raft) logPrefix() string {
-	return fmt.Sprintf("[%d %v term:%d apply-idx:%d commit-idx:%d election-ticks:%d]", rf.me, rf.state.String(), rf.term, rf.applyIndex, rf.commitIndex, rf.electionTimeoutTicks)
+	lastIndex, _ := rf.lastLogInfo()
+	return fmt.Sprintf("[%d %v term:%d applyIdx:%d commitIdx:%d electionTicks:%d lastIndex:%#v]", rf.me, rf.state.String(), rf.term, rf.applyIndex, rf.commitIndex, rf.electionTimeoutTicks, lastIndex)
 }
 
 func calculateLeaderCommitIndex(matchIndex []int) int {
