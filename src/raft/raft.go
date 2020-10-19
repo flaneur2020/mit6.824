@@ -18,6 +18,7 @@ package raft
 //
 
 import (
+	"bytes"
 	"fmt"
 	"log"
 	"math"
@@ -27,6 +28,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"../labgob"
 	"../labrpc"
 )
 
@@ -138,9 +140,8 @@ type Raft struct {
 	voteGranted map[int]bool
 
 	// persistent state on all servers
-	term        int
-	votedFor    int
-	lastApplied uint
+	term     int
+	votedFor int
 
 	// clock in ticks
 	heartbeatTimeoutTicks uint
@@ -163,12 +164,15 @@ func (rf *Raft) GetState() (int, bool) {
 func (rf *Raft) persist() {
 	// Your code here (2C).
 	// Example:
-	// w := new(bytes.Buffer)
-	// e := labgob.NewEncoder(w)
-	// e.Encode(rf.xxx)
-	// e.Encode(rf.yyy)
-	// data := w.Bytes()
-	// rf.persister.SaveRaftState(data)
+	w := new(bytes.Buffer)
+	e := labgob.NewEncoder(w)
+	e.Encode(rf.term)
+	e.Encode(rf.votedFor)
+	e.Encode(rf.logEntries)
+	data := w.Bytes()
+	rf.persister.SaveRaftState(data)
+
+	log.Printf("%v persist term=%d voted-for=%d log-entries=%d", rf.logPrefix(), rf.term, rf.votedFor, len(rf.logEntries))
 }
 
 //
@@ -178,19 +182,25 @@ func (rf *Raft) readPersist(data []byte) {
 	if data == nil || len(data) < 1 { // bootstrap without any state?
 		return
 	}
+
 	// Your code here (2C).
 	// Example:
-	// r := bytes.NewBuffer(data)
-	// d := labgob.NewDecoder(r)
-	// var xxx
-	// var yyy
-	// if d.Decode(&xxx) != nil ||
-	//    d.Decode(&yyy) != nil {
-	//   error...
-	// } else {
-	//   rf.xxx = xxx
-	//   rf.yyy = yyy
-	// }
+	r := bytes.NewBuffer(data)
+	d := labgob.NewDecoder(r)
+
+	if d.Decode(&rf.term) != nil {
+		panic("fail on read persist term")
+	}
+
+	if d.Decode(&rf.votedFor) != nil {
+		panic("fail on read persist votedFor")
+	}
+
+	if d.Decode(&rf.logEntries) != nil {
+		panic("fail on read persist logEntries")
+	}
+
+	log.Printf("%v read-persist term=%d voted-for=%d log-entries=%d", rf.logPrefix(), rf.term, rf.votedFor, len(rf.logEntries))
 }
 
 //
@@ -721,6 +731,7 @@ func (rf *Raft) processAppendEntries(args *AppendEntriesArgs) *AppendEntriesRepl
 	rf.appendLogEntriesSince(args.PrevLogIndex+1, args.LogEntries)
 	rf.commitIndex = args.CommitIndex
 	rf.applyLogs()
+	rf.persist()
 
 	newLastIndex, _ := rf.lastLogInfo()
 	reply.Success = true
