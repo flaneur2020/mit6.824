@@ -75,7 +75,7 @@ func (s RaftState) String() string {
 
 // default ticks for timeouts
 const (
-	defaultHeartBeatTimeoutTicks uint = 5
+	defaultHeartBeatTimeoutTicks uint = 2
 	defaultElectionTimeoutTicks  uint = 100
 	defaultTickIntervalMs             = 10
 )
@@ -172,7 +172,7 @@ func (rf *Raft) persist() {
 	data := w.Bytes()
 	rf.persister.SaveRaftState(data)
 
-	log.Printf("%v persist term=%d voted-for=%d log-entries=%d", rf.logPrefix(), rf.term, rf.votedFor, len(rf.logEntries))
+	// log.Printf("%v persist term=%d voted-for=%d log-entries=%d", rf.logPrefix(), rf.term, rf.votedFor, len(rf.logEntries))
 }
 
 //
@@ -541,7 +541,7 @@ func (rf *Raft) stepCandidate(ev *raftEV) {
 		ev.Done(reply)
 
 	default:
-		log.Printf("%v step-candidate.unexpected-ev %#v", rf.logPrefix(), v)
+		// log.Printf("%v step-candidate.unexpected-ev %#v", rf.logPrefix(), v)
 		ev.Done(nil)
 	}
 }
@@ -747,7 +747,7 @@ func (rf *Raft) processAppendEntriesReply(reply *AppendEntriesReply) {
 
 	if !reply.Success {
 		if rf.nextIndex[reply.PeerID] > 0 {
-			rf.nextIndex[reply.PeerID]--
+			rf.nextIndex[reply.PeerID] = minInt(rf.nextIndex[reply.PeerID]-1, reply.LastLogIndex)
 		}
 		return
 	}

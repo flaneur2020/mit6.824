@@ -10,6 +10,7 @@ package raft
 
 import (
 	"fmt"
+	"log"
 	"math/rand"
 	"sync"
 	"sync/atomic"
@@ -607,6 +608,7 @@ func TestPersist22C(t *testing.T) {
 
 	index := 1
 	for iters := 0; iters < 5; iters++ {
+		log.Printf("one1 %d", 10+index)
 		cfg.one(10+index, servers, true)
 		index++
 
@@ -615,6 +617,7 @@ func TestPersist22C(t *testing.T) {
 		cfg.disconnect((leader1 + 1) % servers)
 		cfg.disconnect((leader1 + 2) % servers)
 
+		log.Printf("one2 %d", 10+index)
 		cfg.one(10+index, servers-2, true)
 		index++
 
@@ -632,6 +635,7 @@ func TestPersist22C(t *testing.T) {
 		cfg.start1((leader1 + 3) % servers)
 		cfg.connect((leader1 + 3) % servers)
 
+		log.Printf("one3 %d", 10+index)
 		cfg.one(10+index, servers-2, true)
 		index++
 
