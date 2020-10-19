@@ -75,7 +75,7 @@ func (s RaftState) String() string {
 
 // default ticks for timeouts
 const (
-	defaultHeartBeatTimeoutTicks uint = 2
+	defaultHeartBeatTimeoutTicks uint = 5
 	defaultElectionTimeoutTicks  uint = 100
 	defaultTickIntervalMs             = 10
 )
@@ -549,7 +549,7 @@ func (rf *Raft) stepCandidate(ev *raftEV) {
 func (rf *Raft) becomeFollower() {
 	log.Printf("%v become-follower", rf.logPrefix())
 	rf.state = RaftFollower
-	rf.resetElectionTimeoutTicks()
+	// rf.resetElectionTimeoutTicks()
 }
 
 func (rf *Raft) becomeLeader() {
@@ -746,8 +746,8 @@ func (rf *Raft) processAppendEntriesReply(reply *AppendEntriesReply) {
 	}
 
 	if !reply.Success {
-		if rf.nextIndex[reply.PeerID] > 0 {
-			rf.nextIndex[reply.PeerID] = minInt(rf.nextIndex[reply.PeerID]-1, reply.LastLogIndex)
+		if rf.nextIndex[reply.PeerID] >= 0 {
+			rf.nextIndex[reply.PeerID]--
 		}
 		return
 	}
@@ -809,6 +809,9 @@ func (rf *Raft) processRequestVote(args *RequestVoteArgs) *RequestVoteReply {
 		reply.Message = "candidate's log index not as updated as our last log"
 		return reply
 	}
+
+	// reset election timer only if you grant the vote
+	rf.resetElectionTimeoutTicks()
 
 	rf.votedFor = args.CandidateID
 	rf.persist()
