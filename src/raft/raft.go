@@ -730,9 +730,10 @@ func (rf *Raft) processAppendEntries(args *AppendEntriesArgs) *AppendEntriesRepl
 	}
 
 	rf.appendLogEntriesSince(args.PrevLogIndex+1, args.LogEntries)
+	rf.persist()
+
 	rf.commitIndex = args.CommitIndex
 	rf.applyLogs()
-	rf.persist()
 
 	newLastIndex, _ := rf.lastLogInfo()
 	reply.Success = true
