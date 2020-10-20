@@ -412,6 +412,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.applyCh = applyCh
 	rf.eventc = make(chan *raftEV, 1)
 	rf.quitc = make(chan struct{})
+
 	go rf.loopEV()
 	go rf.loopTicks()
 
@@ -435,7 +436,8 @@ func (rf *Raft) loopEV() {
 			}
 
 		case <-rf.quitc:
-			break
+			log.Printf("%v loopEV.quited", rf.logPrefix())
+			return
 		}
 	}
 }
@@ -445,7 +447,8 @@ func (rf *Raft) loopTicks() {
 		time.Sleep(defaultTickIntervalMs * time.Millisecond)
 		select {
 		case <-rf.quitc:
-			break
+			log.Printf("%v loopTicks.quited", rf.logPrefix())
+			return
 		case rf.eventc <- newRaftEV(&TickEventArgs{}):
 		}
 	}
@@ -648,6 +651,7 @@ func (rf *Raft) applyLogs() {
 		}
 
 		log.Printf("%v apply-logs msg=%#v", rf.logPrefix(), &msg)
+		// do not go rf.applyCh <- msg because the goroutine have no ordering garantee
 		rf.applyCh <- msg
 		rf.applyIndex = i
 	}
