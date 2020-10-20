@@ -667,6 +667,7 @@ func (rf *Raft) processDispatchCommand(args *DispatchCommandArgs) *DispatchComma
 	log.Printf("%v process-dispatch-command cmd=%#v", rf.logPrefix(), args.Command)
 
 	rf.appendLogEntryByCommand(args.Command, rf.term)
+	rf.persist()
 	lastIndex, lastTerm := rf.lastLogInfo()
 
 	rf.applyLogs()
