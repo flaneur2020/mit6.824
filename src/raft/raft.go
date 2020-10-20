@@ -120,11 +120,12 @@ type Raft struct {
 	// Your data here (2A, 2B, 2C).
 	// Look at the paper's Figure 2 for a description of what
 	// state a Raft server must maintain.
-	state    RaftState
-	eventc   chan *raftEV
-	quitc    chan struct{}
-	quitOnce sync.Once
-	applyCh  chan ApplyMsg
+	state        RaftState
+	eventc       chan *raftEV
+	quitc        chan struct{}
+	quitOnce     sync.Once
+	applyCh      chan ApplyMsg
+	routineGroup sync.WaitGroup
 
 	logEntries []raftLogEntry
 
@@ -262,7 +263,12 @@ type DispatchCommandReply struct {
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	// Your code here (2A, 2B).
 	ev := newRaftEV(args)
-	rf.eventc <- ev
+	select {
+	case <-rf.quitc:
+		return
+	case rf.eventc <- ev:
+	}
+
 	<-ev.c
 	if ev.result == nil {
 		panic("unexpected nil result")
@@ -273,7 +279,11 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 // AppendEntries handler
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
 	ev := newRaftEV(args)
-	rf.eventc <- ev
+	select {
+	case <-rf.quitc:
+		return
+	case rf.eventc <- ev:
+	}
 	<-ev.c
 	if ev.result == nil {
 		panic("unexpected nil result")
@@ -367,6 +377,7 @@ func (rf *Raft) Kill() {
 	// Your code here, if desired.
 	rf.quitOnce.Do(func() {
 		close(rf.quitc)
+		rf.routineGroup.Wait()
 	})
 }
 
@@ -413,6 +424,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.eventc = make(chan *raftEV, 1)
 	rf.quitc = make(chan struct{})
 
+	rf.routineGroup.Add(2)
 	go rf.loopEV()
 	go rf.loopTicks()
 
@@ -421,6 +433,8 @@ func Make(peers []*labrpc.ClientEnd, me int,
 }
 
 func (rf *Raft) loopEV() {
+	defer rf.routineGroup.Done()
+
 	for {
 		select {
 		case ev := <-rf.eventc:
@@ -443,6 +457,8 @@ func (rf *Raft) loopEV() {
 }
 
 func (rf *Raft) loopTicks() {
+	defer rf.routineGroup.Done()
+
 	for {
 		time.Sleep(defaultTickIntervalMs * time.Millisecond)
 		select {
@@ -847,7 +863,10 @@ func (rf *Raft) broadcastRequestVote() {
 			ok := rf.sendRequestVote(peerID, args, &reply)
 			// log.Printf("%v candidate.sent-request-vote [%v] ok=%v args=%#v reply=%#v", rf.logPrefix(), peerID, ok, args, reply)
 			if ok {
-				rf.eventc <- newRaftEV(&reply)
+				select {
+				case <-rf.quitc:
+				case rf.eventc <- newRaftEV(&reply):
+				}
 			}
 		}(peerID)
 	}
@@ -868,7 +887,10 @@ func (rf *Raft) broadcastAppendEntries() {
 
 			emptyReply := AppendEntriesReply{}
 			if ok && reply != emptyReply {
-				rf.eventc <- newRaftEV(&reply)
+				select {
+				case <-rf.quitc:
+				case rf.eventc <- newRaftEV(&reply):
+				}
 			}
 		}(peerID)
 	}
