@@ -74,7 +74,7 @@ func (s RaftState) String() string {
 
 // default ticks for timeouts
 const (
-	defaultHeartBeatTimeoutTicks uint = 5
+	defaultHeartBeatTimeoutTicks uint = 3
 	defaultElectionTimeoutTicks  uint = 100
 	defaultTickIntervalMs             = 10
 )
@@ -172,7 +172,7 @@ func (rf *Raft) persist() {
 	data := w.Bytes()
 	rf.persister.SaveRaftState(data)
 
-	// DPrintf("%v persist term=%d voted-for=%d log-entries=%d", rf.logPrefix(), rf.term, rf.votedFor, len(rf.logEntries))
+	// DPrintf("%v persist term=%d voted-for=%d log-entries=%d", rf.raftInfo(), rf.term, rf.votedFor, len(rf.logEntries))
 }
 
 //
@@ -200,7 +200,7 @@ func (rf *Raft) readPersist(data []byte) {
 		panic("fail on read persist logEntries")
 	}
 
-	DPrintf("%v read-persist term=%d voted-for=%d log-entries=%d", rf.logPrefix(), rf.term, rf.votedFor, len(rf.logEntries))
+	DPrintf("%v read-persist term=%d voted-for=%d log-entries=%d", rf.raftInfo(), rf.term, rf.votedFor, len(rf.logEntries))
 }
 
 //
@@ -349,7 +349,12 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 		Command: command,
 	})
 
-	rf.eventc <- ev
+	select {
+	case <-rf.quitc:
+		return -1, -1, false
+	case rf.eventc <- ev:
+	}
+
 	<-ev.c
 
 	if ev.result == nil {
@@ -377,6 +382,7 @@ func (rf *Raft) Kill() {
 	rf.quitOnce.Do(func() {
 		close(rf.quitc)
 		rf.routineGroup.Wait()
+		DPrintf("%v killed", rf.raftInfo())
 	})
 }
 
@@ -427,7 +433,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	go rf.loopEV()
 	go rf.loopTicks()
 
-	DPrintf("%v raft.start", rf.logPrefix())
+	DPrintf("%v raft.start", rf.raftInfo())
 	return rf
 }
 
@@ -449,7 +455,7 @@ func (rf *Raft) loopEV() {
 			}
 
 		case <-rf.quitc:
-			DPrintf("%v loopEV.quited", rf.logPrefix())
+			DPrintf("%v loopEV.quited", rf.raftInfo())
 			return
 		}
 	}
@@ -462,7 +468,6 @@ func (rf *Raft) loopTicks() {
 		time.Sleep(defaultTickIntervalMs * time.Millisecond)
 		select {
 		case <-rf.quitc:
-			DPrintf("%v loopTicks.quited", rf.logPrefix())
 			return
 		case rf.eventc <- newRaftEV(&TickEventArgs{}):
 		}
@@ -496,7 +501,7 @@ func (rf *Raft) stepLeader(ev *raftEV) {
 		ev.Done(reply)
 
 	default:
-		DPrintf("%v step-leader.unexpected-ev %#v", rf.logPrefix(), v)
+		DPrintf("%v step-leader.unexpected-ev %#v", rf.raftInfo(), v)
 		ev.Done(nil)
 	}
 }
@@ -508,7 +513,7 @@ func (rf *Raft) stepFollower(ev *raftEV) {
 		rf.electionTimeoutTicks--
 		// on election timeout
 		if rf.electionTimeoutTicks <= 0 {
-			DPrintf("%v step-follower.election-timeout start election", rf.logPrefix())
+			DPrintf("%v step-follower.election-timeout start election", rf.raftInfo())
 			rf.startElection()
 			return
 		}
@@ -523,7 +528,7 @@ func (rf *Raft) stepFollower(ev *raftEV) {
 		ev.Done(reply)
 
 	default:
-		// DPrintf("%v step-follower.unexpected-ev %#v", rf.logPrefix(), v)
+		// DPrintf("%v step-follower.unexpected-ev %#v", rf.raftInfo(), v)
 		ev.Done(nil)
 	}
 }
@@ -545,7 +550,7 @@ func (rf *Raft) stepCandidate(ev *raftEV) {
 		}
 		expectedVotes := int(math.Floor(float64(len(rf.peers))/2) + 1)
 		if len(rf.voteGranted)+1 >= expectedVotes {
-			DPrintf("%v step-candidate.im-leader! votes-from=%v expectedVotes=%v", rf.logPrefix(), rf.voteGranted, expectedVotes)
+			DPrintf("%v step-candidate.im-leader! votes-from=%v expectedVotes=%v", rf.raftInfo(), rf.voteGranted, expectedVotes)
 			rf.becomeLeader()
 		}
 		ev.Done(nil)
@@ -559,19 +564,19 @@ func (rf *Raft) stepCandidate(ev *raftEV) {
 		ev.Done(reply)
 
 	default:
-		// DPrintf("%v step-candidate.unexpected-ev %#v", rf.logPrefix(), v)
+		// DPrintf("%v step-candidate.unexpected-ev %#v", rf.raftInfo(), v)
 		ev.Done(nil)
 	}
 }
 
 func (rf *Raft) becomeFollower() {
-	DPrintf("%v become-follower", rf.logPrefix())
+	DPrintf("%v become-follower", rf.raftInfo())
 	rf.state = RaftFollower
 	// rf.resetElectionTimeoutTicks()
 }
 
 func (rf *Raft) becomeLeader() {
-	DPrintf("%v become-leader", rf.logPrefix())
+	DPrintf("%v become-leader", rf.raftInfo())
 	rf.state = RaftLeader
 	rf.heartbeatTimeoutTicks = defaultHeartBeatTimeoutTicks
 
@@ -594,7 +599,7 @@ func (rf *Raft) becomeLeader() {
 // - Reset election timer
 // - Send RequestVote RPCs to all other servers
 func (rf *Raft) startElection() {
-	DPrintf("%v become-candidate.start-election", rf.logPrefix())
+	DPrintf("%v become-candidate.start-election", rf.raftInfo())
 	rf.state = RaftCandidate
 	rf.resetElectionTimeoutTicks()
 
@@ -665,7 +670,7 @@ func (rf *Raft) applyLogs() {
 			CommandIndex: entry.Index,
 		}
 
-		DPrintf("%v apply-logs msg=%#v", rf.logPrefix(), &msg)
+		DPrintf("%v apply-logs msg=%#v", rf.raftInfo(), &msg)
 		// do not go rf.applyCh <- msg because the goroutine have no ordering garantee
 		rf.applyCh <- msg
 		rf.applyIndex = i
@@ -683,7 +688,7 @@ func (rf *Raft) processDispatchCommand(args *DispatchCommandArgs) *DispatchComma
 		return &DispatchCommandReply{IsLeader: false, Index: -1, Term: -1}
 	}
 
-	DPrintf("%v process-dispatch-command cmd=%#v", rf.logPrefix(), args.Command)
+	DPrintf("%v process-dispatch-command cmd=%#v", rf.raftInfo(), args.Command)
 
 	rf.appendLogEntryByCommand(args.Command, rf.term)
 	rf.persist()
@@ -710,7 +715,7 @@ func (rf *Raft) processAppendEntries(args *AppendEntriesArgs) *AppendEntriesRepl
 	}
 
 	defer func() {
-		DPrintf("%v process-append-entries from-leader=%v entries=%d reply=%v", rf.logPrefix(), args.LeaderID, len(args.LogEntries), reply.Message)
+		DPrintf("%v process-append-entries from-leader=%v entries=%d reply=%v", rf.raftInfo(), args.LeaderID, len(args.LogEntries), reply.Message)
 	}()
 
 	if args.Term < rf.term {
@@ -779,7 +784,7 @@ func (rf *Raft) processAppendEntriesReply(reply *AppendEntriesReply) {
 	rf.matchIndex[rf.me], _ = rf.lastLogInfo()
 	commitIndex := calculateLeaderCommitIndex(rf.matchIndex)
 
-	DPrintf("%v process-append-entries-reply matchIndex=%#v new-commit-index=%d", rf.logPrefix(), rf.matchIndex, commitIndex)
+	DPrintf("%v process-append-entries-reply matchIndex=%#v new-commit-index=%d", rf.raftInfo(), rf.matchIndex, commitIndex)
 	if rf.commitIndex < commitIndex {
 		rf.commitIndex = commitIndex
 	}
@@ -796,7 +801,7 @@ func (rf *Raft) processRequestVote(args *RequestVoteArgs) *RequestVoteReply {
 	}
 
 	defer func() {
-		DPrintf("%v process-request-vote from-peer=%d reply=%s", rf.logPrefix(), args.CandidateID, reply.Message)
+		DPrintf("%v process-request-vote from-peer=%d reply=%s", rf.raftInfo(), args.CandidateID, reply.Message)
 	}()
 
 	// if the caller's term smaller than mine, simply refuse
@@ -813,7 +818,7 @@ func (rf *Raft) processRequestVote(args *RequestVoteArgs) *RequestVoteReply {
 
 	// if the caller's term bigger than my term: set currentTerm = T, convert to follower
 	if args.Term > rf.term {
-		DPrintf("%v process-request-vote:term-bigger-than-me from-peer=%v update-term=%v", rf.logPrefix(), args.CandidateID, args.Term)
+		DPrintf("%v process-request-vote:term-bigger-than-me from-peer=%v update-term=%v", rf.raftInfo(), args.CandidateID, args.Term)
 		rf.becomeFollower()
 		rf.term = args.Term
 		rf.votedFor = args.CandidateID
@@ -860,7 +865,7 @@ func (rf *Raft) broadcastRequestVote() {
 		go func(peerID int) {
 			reply := RequestVoteReply{}
 			ok := rf.sendRequestVote(peerID, args, &reply)
-			// DPrintf("%v candidate.sent-request-vote [%v] ok=%v args=%#v reply=%#v", rf.logPrefix(), peerID, ok, args, reply)
+			// DPrintf("%v candidate.sent-request-vote [%v] ok=%v args=%#v reply=%#v", rf.raftInfo(), peerID, ok, args, reply)
 			if ok {
 				select {
 				case <-rf.quitc:
@@ -882,7 +887,7 @@ func (rf *Raft) broadcastAppendEntries() {
 		go func(peerID int) {
 			reply := AppendEntriesReply{}
 			ok := rf.sendAppendEntries(peerID, args, &reply)
-			// DPrintf("%v heartbeat [%v] reply=%#v", rf.logPrefix(), peerID, reply)
+			// DPrintf("%v heartbeat [%v] reply=%#v", rf.raftInfo(), peerID, reply)
 
 			emptyReply := AppendEntriesReply{}
 			if ok && reply != emptyReply {
@@ -919,7 +924,7 @@ func (rf *Raft) prepareAppendEntriesArgs(nextIndex int) *AppendEntriesArgs {
 	return args
 }
 
-func (rf *Raft) logPrefix() string {
+func (rf *Raft) raftInfo() string {
 	lastIndex, _ := rf.lastLogInfo()
 	return fmt.Sprintf("[%d %v term:%d applyIdx:%d commitIdx:%d electionTicks:%d lastIndex:%#v]", rf.me, rf.state.String(), rf.term, rf.applyIndex, rf.commitIndex, rf.electionTimeoutTicks, lastIndex)
 }
