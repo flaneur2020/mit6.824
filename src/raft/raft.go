@@ -74,7 +74,7 @@ func (s RaftState) String() string {
 
 // default ticks for timeouts
 const (
-	defaultHeartBeatTimeoutTicks uint = 3
+	defaultHeartBeatTimeoutTicks uint = 10
 	defaultElectionTimeoutTicks  uint = 100
 	defaultTickIntervalMs             = 10
 )
@@ -821,7 +821,7 @@ func (rf *Raft) processRequestVote(args *RequestVoteArgs) *RequestVoteReply {
 		DPrintf("%v process-request-vote:term-bigger-than-me from-peer=%v update-term=%v", rf.raftInfo(), args.CandidateID, args.Term)
 		rf.becomeFollower()
 		rf.term = args.Term
-		rf.votedFor = args.CandidateID
+		// rf.votedFor = args.CandidateID
 		rf.persist()
 	}
 
