@@ -773,7 +773,7 @@ func (rf *Raft) processAppendEntriesReply(reply *AppendEntriesReply) {
 
 	if !reply.Success {
 		if rf.nextIndex[reply.PeerID] >= 0 {
-			rf.nextIndex[reply.PeerID]--
+			rf.nextIndex[reply.PeerID] = minInt(reply.LastLogIndex, rf.nextIndex[reply.PeerID]-1)
 		}
 		return
 	}
